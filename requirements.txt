@@ -1,4 +1,8 @@
-streamlit
-Pillow
-piexif
-pillow-heif
+
+streamlit>=1.51.0
+streamlit-drawable-konva==0.7.0
+Pillow>=10.0.0
+numpy>=1.26.0
+pillow-heif>=0.18.0
+opencv-python-headless>=4.10.0
+streamlit-image-comparison==0.0.4

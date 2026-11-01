@@ -1,0 +1,360 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 10px;
+    background: #111113;
+    color: #fafafa;
+    font-family: Arial, sans-serif;
+}
+.editor {
+    width: 100%;
+    border: 1px solid #303036;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #18181b;
+}
+.toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid #303036;
+    font-size: 12px;
+    color: #a1a1aa;
+}
+canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+    cursor: grab;
+    background: #18181b;
+}
+canvas:active { cursor: grabbing; }
+.help {
+    padding: 10px 14px;
+    font-size: 11px;
+    color: #a1a1aa;
+}
+.status { color: #d4d4d8; }
+</style>
+</head>
+<body>
+<div class="editor">
+    <div class="toolbar">
+        <span>WATERMARK POSITION EDITOR</span>
+        <span class="status" id="status">Drag to move</span>
+    </div>
+    <canvas id="editor"></canvas>
+    <div class="help">
+        Drag the text to reposition it. Drag the small corner handle to resize it.
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById("editor");
+const ctx = canvas.getContext("2d");
+const statusText = document.getElementById("status");
+
+let args = {};
+let image = new Image();
+let imageLoaded = false;
+let dragging = false;
+let resizing = false;
+let pointerOffset = { x: 0, y: 0 };
+
+let state = {
+    x: 0.5,
+    y: 0.5,
+    scale: 1
+};
+
+let lastSent = "";
+let renderPending = false;
+
+function sendValue() {
+    const value = {
+        x: Math.max(0, Math.min(1, state.x)),
+        y: Math.max(0, Math.min(1, state.y)),
+        scale: Math.max(0.2, Math.min(5, state.scale))
+    };
+
+    const encoded = JSON.stringify(value);
+    if (encoded === lastSent) return;
+    lastSent = encoded;
+
+    window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setComponentValue",
+        value: value
+    }, "*");
+}
+
+function resizeCanvas() {
+    if (!imageLoaded) return;
+
+    const maxWidth = Math.max(280, canvas.parentElement.clientWidth - 20);
+    const ratio = Math.min(1, maxWidth / image.width);
+
+    canvas.width = Math.round(image.width * ratio);
+    canvas.height = Math.round(image.height * ratio);
+
+    draw();
+}
+
+function getTextMetrics() {
+    const ratio = canvas.width / image.width;
+    const fontSize = Math.max(
+        8,
+        Number(args.font_size || 48) * ratio * state.scale
+    );
+
+    ctx.font = `bold ${fontSize}px Arial`;
+
+    const lines = String(args.text || "").split("\n");
+    const lineHeight = fontSize * 1.25;
+    const widths = lines.map(line => ctx.measureText(line).width);
+
+    return {
+        fontSize,
+        lines,
+        lineHeight,
+        width: Math.max(20, ...widths),
+        height: Math.max(lineHeight, lines.length * lineHeight)
+    };
+}
+
+function getBounds() {
+    const m = getTextMetrics();
+    const x = state.x * canvas.width;
+    const y = state.y * canvas.height;
+
+    return {
+        left: x - m.width / 2 - 8,
+        right: x + m.width / 2 + 8,
+        top: y - m.height / 2 - 8,
+        bottom: y + m.height / 2 + 8,
+        handleX: x + m.width / 2 + 8,
+        handleY: y + m.height / 2 + 8
+    };
+}
+
+function draw() {
+    if (!imageLoaded) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const text = String(args.text || "");
+    if (!text) {
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "14px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(
+            "Enter watermark text in the settings panel",
+            canvas.width / 2,
+            canvas.height / 2
+        );
+        return;
+    }
+
+    const m = getTextMetrics();
+    const x = state.x * canvas.width;
+    const y = state.y * canvas.height;
+    const opacity = Math.max(
+        0,
+        Math.min(100, Number(args.opacity ?? 100))
+    ) / 100;
+
+    ctx.save();
+    ctx.font = `bold ${m.fontSize}px Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.globalAlpha = opacity;
+
+    const lines = m.lines;
+    const startY = y - ((lines.length - 1) * m.lineHeight) / 2;
+
+    lines.forEach((line, index) => {
+        const lineY = startY + index * m.lineHeight;
+
+        if (args.outline) {
+            ctx.lineWidth = Math.max(1, m.fontSize / 18);
+            ctx.strokeStyle = "#000000";
+            ctx.strokeText(line, x, lineY);
+        }
+
+        ctx.fillStyle = args.color || "#ffffff";
+        ctx.fillText(line, x, lineY);
+    });
+
+    ctx.restore();
+
+    // Selection frame and resize handle
+    const b = getBounds();
+
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(
+        b.left,
+        b.top,
+        b.right - b.left,
+        b.bottom - b.top
+    );
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "#38bdf8";
+    ctx.beginPath();
+    ctx.arc(b.handleX, b.handleY, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(b.handleX, b.handleY, 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function pointerPosition(event) {
+    const rect = canvas.getBoundingClientRect();
+
+    return {
+        x: (event.clientX - rect.left) * (canvas.width / rect.width),
+        y: (event.clientY - rect.top) * (canvas.height / rect.height)
+    };
+}
+
+canvas.addEventListener("pointerdown", event => {
+    if (!imageLoaded || !args.text) return;
+
+    const p = pointerPosition(event);
+    const b = getBounds();
+
+    const nearHandle =
+        Math.hypot(p.x - b.handleX, p.y - b.handleY) < 18;
+
+    const inside =
+        p.x >= b.left && p.x <= b.right &&
+        p.y >= b.top && p.y <= b.bottom;
+
+    if (nearHandle) {
+        resizing = true;
+        dragging = false;
+        statusText.textContent = "Resizing";
+    } else if (inside) {
+        dragging = true;
+        resizing = false;
+        pointerOffset.x = p.x - state.x * canvas.width;
+        pointerOffset.y = p.y - state.y * canvas.height;
+        statusText.textContent = "Moving";
+    } else {
+        return;
+    }
+
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+});
+
+canvas.addEventListener("pointermove", event => {
+    if (!dragging && !resizing) return;
+
+    const p = pointerPosition(event);
+
+    if (dragging) {
+        state.x = (p.x - pointerOffset.x) / canvas.width;
+        state.y = (p.y - pointerOffset.y) / canvas.height;
+    }
+
+    if (resizing) {
+        const centerX = state.x * canvas.width;
+        const centerY = state.y * canvas.height;
+        const distance = Math.hypot(p.x - centerX, p.y - centerY);
+        const baseDistance = Math.max(20, getTextMetrics().width * 0.7);
+
+        state.scale = Math.max(
+            0.2,
+            Math.min(5, state.scale * distance / baseDistance)
+        );
+    }
+
+    state.x = Math.max(0, Math.min(1, state.x));
+    state.y = Math.max(0, Math.min(1, state.y));
+    state.scale = Math.max(0.2, Math.min(5, state.scale));
+
+    draw();
+    sendValue();
+    event.preventDefault();
+});
+
+function stopPointer() {
+    dragging = false;
+    resizing = false;
+    statusText.textContent = "Drag to move";
+}
+
+canvas.addEventListener("pointerup", stopPointer);
+canvas.addEventListener("pointercancel", stopPointer);
+canvas.addEventListener("lostpointercapture", stopPointer);
+
+function loadArgs(newArgs) {
+    args = newArgs || {};
+
+    const incoming = args.value || {};
+    state = {
+        x: Math.max(0, Math.min(1, Number(incoming.x ?? 0.5))),
+        y: Math.max(0, Math.min(1, Number(incoming.y ?? 0.5))),
+        scale: Math.max(0.2, Math.min(5, Number(incoming.scale ?? 1)))
+    };
+
+    imageLoaded = false;
+    image = new Image();
+
+    image.onload = () => {
+        imageLoaded = true;
+        resizeCanvas();
+    };
+
+    image.onerror = () => {
+        statusText.textContent = "Could not load preview image";
+    };
+
+    image.src = args.image || "";
+}
+
+window.addEventListener("message", event => {
+    const message = event.data;
+
+    if (!message || message.type !== "streamlit:render") return;
+
+    loadArgs(message.args);
+});
+
+window.addEventListener("resize", () => {
+    if (imageLoaded) resizeCanvas();
+});
+
+window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:componentReady",
+    apiVersion: 1
+}, "*");
+
+window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setFrameHeight",
+    height: 500
+}, "*");
+</script>
+</body>
+</html>
